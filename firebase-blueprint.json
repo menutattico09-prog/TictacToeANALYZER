@@ -1,0 +1,53 @@
+{
+  "entities": {
+    "Match": {
+      "title": "Match",
+      "description": "A saved Ultimate Tic-Tac-Toe match",
+      "type": "object",
+      "properties": {
+        "board": {
+          "type": "array",
+          "description": "The 81 cells of the board"
+        },
+        "subGridWinners": {
+          "type": "array",
+          "description": "The winners of the 9 subgrids"
+        },
+        "nextPlayer": {
+          "type": "string",
+          "enum": ["X", "O"]
+        },
+        "activeSubGrid": {
+          "type": "number",
+          "description": "The index of the active subgrid (0-8 or null)"
+        },
+        "winner": {
+          "type": "string",
+          "description": "The winner of the match (X, O, or null)"
+        },
+        "isGameOver": {
+          "type": "boolean"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "userId": {
+          "type": "string",
+          "description": "The ID of the user who saved the match"
+        },
+        "matchName": {
+          "type": "string",
+          "description": "A custom name for the match"
+        }
+      },
+      "required": ["board", "subGridWinners", "nextPlayer", "isGameOver", "timestamp", "userId"]
+    }
+  },
+  "firestore": {
+    "/matches/{matchId}": {
+      "schema": "Match",
+      "description": "Collection of saved matches"
+    }
+  }
+}
