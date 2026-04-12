@@ -1,10 +1,10 @@
 {
-  "projectId": "gen-lang-client-0652482653",
-  "appId": "1:1073191971481:web:a3df2f7a1835babec4e608",
-  "apiKey": "AIzaSyCfQShv8xSUQHb0RsqEIopjCXBZLXgUUW4",
-  "authDomain": "gen-lang-client-0652482653.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-bd06a890-64a3-4a4c-b7dc-d1fc437ed3db",
-  "storageBucket": "gen-lang-client-0652482653.firebasestorage.app",
-  "messagingSenderId": "1073191971481",
-  "measurementId": ""
+  "projectId": "tic-tac-toe-85971",
+  "appId": "1:768258616010:web:cb80c65373f56bafc1a233",
+  "apiKey": "AIzaSyAQh4XbX2k3qIoxHF1UOtW865HLt7d7k0E",
+  "authDomain": "tic-tac-toe-85971.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "tic-tac-toe-85971.firebasestorage.app",
+  "messagingSenderId": "768258616010",
+  "measurementId": "G-FQZ098DJRM"
 }
