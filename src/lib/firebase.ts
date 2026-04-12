@@ -1,12 +1,23 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, collection, addDoc, query, where, onSnapshot, orderBy, Timestamp, doc, deleteDoc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, query, where, onSnapshot, orderBy, Timestamp, doc, deleteDoc, getDocFromServer, enableNetwork, disableNetwork } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import toast from 'react-hot-toast';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const googleProvider = new GoogleAuthProvider();
+
+export async function checkConnection() {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+    return true;
+  } catch (error: any) {
+    if (error.code === 'permission-denied') return true; // Database exists but we can't read this specific doc
+    return false;
+  }
+}
 
 export enum OperationType {
   CREATE = 'create',
@@ -56,8 +67,9 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     path
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
+  toast.error(`Firebase Error: ${errInfo.error}`);
   throw new Error(JSON.stringify(errInfo));
 }
 
-export { Timestamp, collection, addDoc, query, where, onSnapshot, orderBy, doc, deleteDoc, signInWithPopup, signOut, onAuthStateChanged };
+export { Timestamp, collection, addDoc, query, where, onSnapshot, orderBy, doc, deleteDoc, signInWithPopup, signOut, onAuthStateChanged, enableNetwork, disableNetwork };
 export type { User };

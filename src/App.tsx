@@ -36,7 +36,8 @@ import {
   findForcedWin
 } from './lib/game-engine';
 import { cn } from './lib/utils';
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
+import { Toaster, toast } from 'react-hot-toast';
 import { 
   auth, 
   db, 
@@ -55,10 +56,11 @@ import {
   doc, 
   OperationType, 
   handleFirestoreError,
+  checkConnection,
   User
 } from './lib/firebase';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 const TOTAL_SIMULATIONS = 2000;
 const SIM_BATCH_SIZE = 50;
@@ -83,6 +85,7 @@ export default function App() {
   const [savedMatches, setSavedMatches] = useState<SavedMatch[]>([]);
   const [showMatches, setShowMatches] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [dbConnected, setDbConnected] = useState<boolean | null>(null);
   
   const simRef = useRef<number>(0);
   const animationRef = useRef<number | null>(null);
@@ -192,7 +195,19 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
+      if (user) {
+        toast.success(`Welcome, ${user.displayName || 'User'}!`);
+      }
     });
+    
+    // Check DB connection
+    checkConnection().then(connected => {
+      setDbConnected(connected);
+      if (!connected) {
+        toast.error("Firebase Database not reachable. Check your console settings.");
+      }
+    });
+
     return () => unsubscribe();
   }, []);
 
@@ -329,17 +344,16 @@ export default function App() {
       Provide a concise strategic analysis (max 3 sentences) and suggest the best move with reasoning. Use the A1-I9 notation.`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: prompt,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
-        }
+        model: "gemini-2.0-flash",
+        contents: [{ role: 'user', parts: [{ text: prompt }] }]
       });
 
       setAiAnalysisText(response.text || "Unable to generate analysis.");
+      toast.success("Analysis complete!");
     } catch (error) {
       console.error("AI Analysis error:", error);
       setAiAnalysisText("Error generating AI insight. Please check your API key.");
+      toast.error("AI Analysis failed.");
     } finally {
       setAiThinking(false);
     }
@@ -404,6 +418,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#060606] text-[#e4e4e4] font-sans selection:bg-[#2E5BFF]/30">
+      <Toaster position="top-right" toastOptions={{
+        style: {
+          background: '#1a1a1a',
+          color: '#fff',
+          border: '1px solid rgba(255,255,255,0.1)'
+        }
+      }} />
       {/* Header */}
       <header className="border-b border-white/5 bg-black/80 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
@@ -454,6 +475,10 @@ export default function App() {
               </button>
             )}
             <div className="hidden md:flex items-center gap-6 text-[10px] font-mono text-white/40 uppercase tracking-[0.2em]">
+              <div className="flex items-center gap-2">
+                <div className={cn("w-2 h-2 rounded-full", dbConnected === true ? "bg-emerald-500" : dbConnected === false ? "bg-red-500" : "bg-yellow-500")} />
+                <span>DB: {dbConnected === true ? 'Online' : dbConnected === false ? 'Offline' : 'Connecting...'}</span>
+              </div>
               <div className="flex items-center gap-2">
                 <Activity className={cn("w-3 h-3", isAnalyzing && "text-[#2E5BFF] animate-pulse")} />
                 <span>{isAnalyzing ? `Simulating: ${simResult.total}` : 'Analysis Idle'}</span>
