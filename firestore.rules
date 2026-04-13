@@ -42,6 +42,17 @@ service cloud.firestore {
              (!('matchName' in data) || (data.matchName is string && data.matchName.size() <= 100));
     }
 
+    function isValidRoom(data) {
+      return data.board is list && data.board.size() == 81 &&
+             data.subGridWinners is list && data.subGridWinners.size() == 9 &&
+             data.nextPlayer in ['X', 'O'] &&
+             data.isGameOver is bool &&
+             data.status in ['waiting', 'playing', 'finished'] &&
+             data.players is map &&
+             data.players.p1 is string &&
+             data.createdAt is timestamp;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -53,6 +64,21 @@ service cloud.firestore {
                       isOwner(request.resource.data.userId) && 
                       isValidMatch(request.resource.data);
       allow delete: if isOwner(resource.data.userId);
+    }
+
+    match /rooms/{roomId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && 
+                      request.resource.data.players.p1 == request.auth.uid &&
+                      isValidRoom(request.resource.data);
+      allow update: if isAuthenticated() && (
+        // Joining as P2
+        (resource.data.status == 'waiting' && 
+         request.resource.data.players.p2 == request.auth.uid) ||
+        // Making a move
+        (request.auth.uid == resource.data.players.p1 || request.auth.uid == resource.data.players.p2)
+      ) && isValidRoom(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.players.p1 == request.auth.uid;
     }
 
     match /users/{userId} {

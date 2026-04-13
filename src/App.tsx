@@ -57,6 +57,10 @@ import {
   OperationType, 
   handleFirestoreError,
   checkConnection,
+  signInAnonymously,
+  setDoc,
+  updateDoc,
+  getDoc,
   User
 } from './lib/firebase';
 
@@ -87,6 +91,19 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [dbConnected, setDbConnected] = useState<boolean | null>(null);
   
+  // Multiplayer State
+  const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [roomData, setRoomData] = useState<any>(null);
+  const [mySymbol, setMySymbol] = useState<Player>(null);
+  const [isLobbyOpen, setIsLobbyOpen] = useState(true);
+  const [inputCode, setInputCode] = useState('');
+  const [roomOptions, setRoomOptions] = useState({
+    showAnalysis: true,
+    p1Symbol: 'X' as Player | 'random',
+    startingPlayer: 'p1' as 'p1' | 'p2' | 'random'
+  });
+  const [isAnalysisVisible, setIsAnalysisVisible] = useState(true);
+
   const simRef = useRef<number>(0);
   const animationRef = useRef<number | null>(null);
 
@@ -196,7 +213,11 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
       if (user) {
-        toast.success(`Welcome, ${user.displayName || 'User'}!`);
+        if (!user.isAnonymous) {
+          toast.success(`Welcome, ${user.displayName || 'User'}!`);
+        }
+      } else {
+        signInAnonymously(auth).catch(console.error);
       }
     });
     
@@ -210,6 +231,46 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // Room Sync Effect
+  useEffect(() => {
+    if (!roomCode) return;
+
+    const unsubscribe = onSnapshot(doc(db, 'rooms', roomCode), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setRoomData(data);
+        setState({
+          board: data.board,
+          subGridWinners: data.subGridWinners,
+          nextPlayer: data.nextPlayer,
+          activeSubGrid: data.activeSubGrid,
+          winner: data.winner,
+          isGameOver: data.isGameOver
+        });
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `rooms/${roomCode}`);
+    });
+
+    return () => unsubscribe();
+  }, [roomCode]);
+
+  // Fog of War Effect
+  useEffect(() => {
+    if (!roomCode) {
+      setIsAnalysisVisible(true);
+      return;
+    }
+    
+    if (state.nextPlayer === mySymbol) {
+      setIsAnalysisVisible(false);
+      const timer = setTimeout(() => setIsAnalysisVisible(true), 5000);
+      return () => clearTimeout(timer);
+    } else {
+      setIsAnalysisVisible(false);
+    }
+  }, [state.nextPlayer, mySymbol, roomCode]);
 
   // Firebase Matches Effect
   useEffect(() => {
@@ -299,17 +360,120 @@ export default function App() {
     setShowMatches(false);
   };
 
-  const handleMove = (index: number) => {
+  const handleMove = async (index: number) => {
     if (state.board[index] !== null || state.isGameOver) return;
     
+    // Multiplayer checks
+    if (roomCode && roomData) {
+      if (state.nextPlayer !== mySymbol) {
+        toast.error("It's not your turn!");
+        return;
+      }
+      if (roomData.status === 'waiting') {
+        toast.error("Waiting for opponent...");
+        return;
+      }
+    }
+
     const subGridIdx = getSubGridIndex(index);
     if (state.activeSubGrid !== null && state.activeSubGrid !== subGridIdx) return;
     if (state.subGridWinners[subGridIdx] !== null && state.activeSubGrid !== null) return;
 
     const newState = makeMove(state, index);
-    setState(newState);
-    setHistory(prev => [...prev, newState]);
-    setAiAnalysisText(null);
+    
+    if (roomCode) {
+      try {
+        await updateDoc(doc(db, 'rooms', roomCode), {
+          board: newState.board,
+          subGridWinners: newState.subGridWinners,
+          nextPlayer: newState.nextPlayer,
+          activeSubGrid: newState.activeSubGrid,
+          winner: newState.winner,
+          isGameOver: newState.isGameOver,
+          lastMoveAt: Timestamp.now()
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
+      }
+    } else {
+      setState(newState);
+      setHistory(prev => [...prev, newState]);
+      setAiAnalysisText(null);
+    }
+  };
+
+  const createRoom = async () => {
+    if (!user) {
+      await signInAnonymously(auth);
+    }
+    const code = Math.floor(1000 + Math.random() * 9000).toString();
+    const p1Symbol = roomOptions.p1Symbol === 'random' ? (Math.random() > 0.5 ? 'X' : 'O') : roomOptions.p1Symbol;
+    const p2Symbol = p1Symbol === 'X' ? 'O' : 'X';
+    
+    let nextPlayer: Player = 'X';
+    if (roomOptions.startingPlayer === 'p1') {
+      nextPlayer = p1Symbol;
+    } else if (roomOptions.startingPlayer === 'p2') {
+      nextPlayer = p2Symbol;
+    } else {
+      nextPlayer = Math.random() > 0.5 ? 'X' : 'O';
+    }
+    
+    const initialRoom = {
+      board: INITIAL_STATE.board,
+      subGridWinners: INITIAL_STATE.subGridWinners,
+      nextPlayer,
+      activeSubGrid: INITIAL_STATE.activeSubGrid,
+      winner: INITIAL_STATE.winner,
+      isGameOver: INITIAL_STATE.isGameOver,
+      status: 'waiting',
+      players: { p1: auth.currentUser?.uid },
+      p1Symbol,
+      p2Symbol,
+      options: roomOptions,
+      createdAt: Timestamp.now()
+    };
+
+    try {
+      await setDoc(doc(db, 'rooms', code), initialRoom);
+      setRoomCode(code);
+      setMySymbol(p1Symbol);
+      setIsLobbyOpen(false);
+      toast.success(`Room ${code} created!`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `rooms/${code}`);
+    }
+  };
+
+  const joinRoom = async (code: string) => {
+    if (!user) {
+      await signInAnonymously(auth);
+    }
+    try {
+      const roomRef = doc(db, 'rooms', code);
+      const roomSnap = await getDoc(roomRef);
+      if (!roomSnap.exists()) {
+        toast.error("Room not found.");
+        return;
+      }
+      const data = roomSnap.data();
+      if (data.status !== 'waiting') {
+        toast.error("Room is already full or finished.");
+        return;
+      }
+
+      await updateDoc(roomRef, {
+        'players.p2': auth.currentUser?.uid,
+        status: 'playing'
+      });
+
+      setRoomCode(code);
+      setMySymbol(data.p2Symbol);
+      setIsLobbyOpen(false);
+      toast.success(`Joined room ${code}!`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `rooms/${code}`);
+    }
   };
 
   const resetGame = () => {
@@ -325,6 +489,15 @@ export default function App() {
       setState(newHistory[newHistory.length - 1]);
       setAiAnalysisText(null);
     }
+  };
+
+  const leaveRoom = () => {
+    setRoomCode(null);
+    setRoomData(null);
+    setMySymbol(null);
+    setIsLobbyOpen(true);
+    setState(INITIAL_STATE);
+    setHistory([INITIAL_STATE]);
   };
 
   const getAiInsight = async () => {
@@ -436,6 +609,15 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-4">
+            {roomCode && (
+              <div className="flex items-center gap-3 px-4 py-1.5 bg-white/5 rounded-full border border-white/10">
+                <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Room</span>
+                <span className="text-sm font-black text-[#2E5BFF]">{roomCode}</span>
+                <button onClick={leaveRoom} className="p-1 hover:text-red-500 transition-colors">
+                  <LogOut className="w-3 h-3" />
+                </button>
+              </div>
+            )}
             {user ? (
               <div className="flex items-center gap-3">
                 <button 
@@ -499,265 +681,421 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-[auto_1fr_350px] gap-8">
-        
-        {/* Eval Bar */}
-        <div className="hidden lg:flex flex-col items-center gap-4">
-          <div className="h-[500px] w-8 bg-[#000000] rounded-xl relative overflow-hidden border border-white/10">
-            {/* O Advantage (Neon Red) - Bottom Layer */}
-            <div className="absolute inset-0 bg-[#FF3131]/70" />
-            
-            {/* X Advantage (Electric Blue) - Top Part */}
+      <main className="max-w-7xl mx-auto p-4 md:p-8">
+        <AnimatePresence mode="wait">
+          {isLobbyOpen ? (
             <motion.div 
-              className="absolute top-0 left-0 right-0 bg-[#2E5BFF]/70 z-10"
-              initial={{ height: '50%' }}
-              animate={{ height: `${evalPercentage}%` }}
-              transition={{ duration: 0.1, ease: "linear" }}
+              key="lobby"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="max-w-md mx-auto flex flex-col gap-8 py-12"
             >
-              {/* Percentage Label X (Only if dominant) */}
-              {evalPercentage > 50 && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="text-xs font-black text-white select-none">
-                    {evalPercentage.toFixed(0)}%
-                  </span>
-                </div>
-              )}
-              {/* 50% Label (Top) */}
-              {Math.abs(evalPercentage - 50) < 0.1 && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="text-xs font-black text-white/40 select-none">
-                    50%
-                  </span>
-                </div>
-              )}
-            </motion.div>
-
-            {/* Percentage Label O (Only if dominant) */}
-            {(100 - evalPercentage) > 50 && (
-              <div className="absolute bottom-0 left-0 right-0 flex items-center justify-center z-20" style={{ height: `${100 - evalPercentage}%` }}>
-                <span className="text-xs font-black text-white select-none">
-                  {(100 - evalPercentage).toFixed(0)}%
-                </span>
+              <div className="text-center">
+                <h2 className="text-4xl font-black tracking-tighter mb-2">MULTIPLAYER LOBBY</h2>
+                <p className="text-white/40 font-mono text-xs uppercase tracking-[0.3em]">Select your operation</p>
               </div>
-            )}
-            
-            {/* 50% Label (Bottom) */}
-            {Math.abs(evalPercentage - 50) < 0.1 && (
-              <div className="absolute bottom-0 left-0 right-0 flex items-center justify-center z-20 h-1/2">
-                <span className="text-xs font-black text-white/40 select-none">
-                  50%
-                </span>
-              </div>
-            )}
-            
-            {/* 50% Marker */}
-            <div className="absolute top-1/2 left-0 right-0 h-px border-t border-white/10 z-30" />
-          </div>
-          <div className="text-[10px] font-mono text-white/40 uppercase vertical-rl rotate-180 tracking-[0.3em]">
-            Advantage Bar
-          </div>
-        </div>
 
-        {/* Main Board Area */}
-        <div className="flex flex-col gap-6">
-          <div className="relative aspect-square max-w-[600px] w-full mx-auto bg-white/[0.02] p-3 rounded-2xl border border-white/10 shadow-2xl">
-            {/* The 9x9 Grid */}
-            <div className="grid grid-cols-3 grid-rows-3 gap-3 h-full w-full">
-              {Array.from({ length: 9 }).map((_, subGridIdx) => (
-                <SubGrid 
-                  key={subGridIdx}
-                  index={subGridIdx}
-                  state={state}
-                  onMove={handleMove}
-                  isNext={state.activeSubGrid === subGridIdx || state.activeSubGrid === null}
-                />
-              ))}
-            </div>
+              <div className="grid grid-cols-1 gap-4">
+                <div className="bg-white/5 p-6 rounded-2xl border border-white/10 flex flex-col gap-4">
+                  <h3 className="text-sm font-bold uppercase tracking-widest text-[#2E5BFF]">Create Room</h3>
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-white/60">Show Analysis</span>
+                      <button 
+                        onClick={() => setRoomOptions(prev => ({ ...prev, showAnalysis: !prev.showAnalysis }))}
+                        className={cn(
+                          "w-10 h-5 rounded-full transition-colors relative",
+                          roomOptions.showAnalysis ? "bg-[#2E5BFF]" : "bg-white/10"
+                        )}
+                      >
+                        <div className={cn(
+                          "absolute top-1 w-3 h-3 bg-white rounded-full transition-all",
+                          roomOptions.showAnalysis ? "left-6" : "left-1"
+                        )} />
+                      </button>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <span className="text-xs text-white/60">Your Symbol</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {['X', 'O', 'random'].map(s => (
+                          <button
+                            key={s}
+                            onClick={() => setRoomOptions(prev => ({ ...prev, p1Symbol: s as any }))}
+                            className={cn(
+                              "py-2 rounded-lg border text-xs font-bold transition-all",
+                              roomOptions.p1Symbol === s ? "bg-[#2E5BFF] border-[#2E5BFF] text-white" : "bg-white/5 border-white/10 text-white/40 hover:bg-white/10"
+                            )}
+                          >
+                            {s.toUpperCase()}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <span className="text-xs text-white/60">Who Starts</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { id: 'p1', label: 'ME' },
+                          { id: 'p2', label: 'FRIEND' },
+                          { id: 'random', label: 'RANDOM' }
+                        ].map(s => (
+                          <button
+                            key={s.id}
+                            onClick={() => setRoomOptions(prev => ({ ...prev, startingPlayer: s.id as any }))}
+                            className={cn(
+                              "py-2 rounded-lg border text-[10px] font-bold transition-all",
+                              roomOptions.startingPlayer === s.id ? "bg-[#2E5BFF] border-[#2E5BFF] text-white" : "bg-white/5 border-white/10 text-white/40 hover:bg-white/10"
+                            )}
+                          >
+                            {s.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <button 
+                      onClick={createRoom}
+                      className="w-full py-4 bg-[#2E5BFF] hover:bg-[#2E5BFF]/80 text-white rounded-xl font-black transition-all shadow-lg shadow-[#2E5BFF]/20"
+                    >
+                      INITIALIZE ROOM
+                    </button>
+                  </div>
+                </div>
 
-            {/* Game Over Overlay */}
-            <AnimatePresence>
-              {state.isGameOver && (
-                <motion.div 
-                  initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
-                  animate={{ opacity: 1, backdropFilter: 'blur(8px)' }}
-                  exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
-                  className="absolute inset-0 z-40 bg-black/60 flex flex-col items-center justify-center rounded-2xl border border-white/20"
+                <div className="flex items-center gap-4 opacity-20">
+                  <div className="h-px flex-1 bg-white" />
+                  <span className="text-[10px] font-mono">OR</span>
+                  <div className="h-px flex-1 bg-white" />
+                </div>
+
+                <div className="bg-white/5 p-6 rounded-2xl border border-white/10 flex flex-col gap-4">
+                  <h3 className="text-sm font-bold uppercase tracking-widest text-[#FF3131]">Join Room</h3>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      placeholder="4-DIGIT CODE"
+                      value={inputCode}
+                      onChange={(e) => setInputCode(e.target.value.toUpperCase())}
+                      maxLength={4}
+                      className="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-3 font-mono text-center tracking-[0.5em] focus:outline-none focus:border-[#FF3131] transition-colors"
+                    />
+                    <button 
+                      onClick={() => joinRoom(inputCode)}
+                      className="px-6 bg-[#FF3131] hover:bg-[#FF3131]/80 text-white rounded-xl font-black transition-all"
+                    >
+                      JOIN
+                    </button>
+                  </div>
+                </div>
+                
+                <button 
+                  onClick={() => setIsLobbyOpen(false)}
+                  className="text-xs text-white/20 hover:text-white/60 transition-colors uppercase tracking-widest font-mono"
                 >
-                  <motion.div
-                    initial={{ scale: 0.5, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    transition={{ type: 'spring', delay: 0.2 }}
-                  >
-                    <Trophy className={cn(
-                      "w-24 h-24 mb-6",
-                      state.winner === 'X' ? "text-[#2E5BFF]" : state.winner === 'O' ? "text-[#FF3131]" : "text-gray-400"
-                    )} />
-                  </motion.div>
-                  <h2 className="text-5xl font-black mb-2 tracking-tighter">
-                    {state.winner ? `${state.winner} DOMINATES` : "STALEMATE"}
-                  </h2>
-                  <p className="text-white/40 mb-10 font-mono text-xs uppercase tracking-[0.4em]">Final Engine Evaluation</p>
-                  <button 
-                    onClick={resetGame}
-                    className="px-10 py-4 bg-[#2E5BFF] hover:bg-[#2E5BFF]/80 text-white rounded-xl font-black transition-all transform hover:scale-105 active:scale-95 shadow-lg shadow-[#2E5BFF]/20"
-                  >
-                    RESTART ANALYZER
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-
-          {/* Controls & Status */}
-          <div className="flex items-center justify-between bg-white/5 p-5 rounded-2xl border border-white/10">
-            <div className="flex items-center gap-6">
-              <div className="flex flex-col">
-                <span className="text-[10px] text-white/30 uppercase tracking-[0.2em] mb-1">Turn</span>
-                <div className="flex items-center gap-3">
-                  <div className={cn(
-                    "w-4 h-4 rounded-full",
-                    state.nextPlayer === 'X' ? "bg-[#2E5BFF] shadow-[0_0_15px_rgba(46,91,255,0.5)]" : "bg-[#FF3131] shadow-[0_0_15px_rgba(255,49,49,0.5)]"
-                  )} />
-                  <span className="font-black text-xl tracking-tight">{state.nextPlayer}</span>
-                </div>
+                  Skip to Local Analysis
+                </button>
               </div>
-              <div className="w-px h-10 bg-white/10" />
-              <div className="flex flex-col">
-                <span className="text-[10px] text-white/30 uppercase tracking-[0.2em] mb-1">Evaluation</span>
-                <span className={cn(
-                  "font-mono font-black text-xl tracking-tight",
-                  relativeScore > 0 ? "text-[#2E5BFF]" : relativeScore < 0 ? "text-[#FF3131]" : "text-white/40"
-                )}>
-                  {relativeScore > 0 ? `+${relativeScore.toFixed(1)}` : relativeScore.toFixed(1)}
-                </span>
-              </div>
-            </div>
+            </motion.div>
+          ) : (
+            <motion.div 
+              key="game"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="grid grid-cols-1 lg:grid-cols-[auto_1fr_350px] gap-8"
+            >
+              {/* Eval Bar */}
+              <div className="hidden lg:flex flex-col items-center gap-4">
+                <div className="h-[500px] w-8 bg-[#000000] rounded-xl relative overflow-hidden border border-white/10">
+                  <AnimatePresence>
+                    {isAnalysisVisible && (roomData?.options?.showAnalysis !== false) && (
+                      <motion.div 
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="absolute inset-0"
+                      >
+                        {/* O Advantage (Neon Red) - Bottom Layer */}
+                        <div className="absolute inset-0 bg-[#FF3131]/70" />
+                        
+                        {/* X Advantage (Electric Blue) - Top Part */}
+                        <motion.div 
+                          className="absolute top-0 left-0 right-0 bg-[#2E5BFF]/70 z-10"
+                          initial={{ height: '50%' }}
+                          animate={{ height: `${evalPercentage}%` }}
+                          transition={{ duration: 0.1, ease: "linear" }}
+                        >
+                          {/* Percentage Label X (Only if dominant) */}
+                          {evalPercentage > 50 && (
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="text-xs font-black text-white select-none">
+                                {evalPercentage.toFixed(0)}%
+                              </span>
+                            </div>
+                          )}
+                          {/* 50% Label (Top) */}
+                          {Math.abs(evalPercentage - 50) < 0.1 && (
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="text-xs font-black text-white/40 select-none">
+                                50%
+                              </span>
+                            </div>
+                          )}
+                        </motion.div>
 
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={undoMove}
-                disabled={history.length <= 1}
-                className="p-3 hover:bg-white/10 rounded-xl transition-colors disabled:opacity-20"
-              >
-                <RotateCcw className="w-5 h-5" />
-              </button>
-              <button 
-                onClick={getAiInsight}
-                disabled={aiThinking || state.isGameOver}
-                className="flex items-center gap-3 px-6 py-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all disabled:opacity-40 border border-white/10"
-              >
-                {aiThinking ? (
-                  <motion.div 
-                    animate={{ rotate: 360 }}
-                    transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
-                  >
-                    <Brain className="w-5 h-5 text-[#2E5BFF]" />
-                  </motion.div>
-                ) : (
-                  <Brain className="w-5 h-5 text-[#2E5BFF]" />
-                )}
-                <span className="text-sm font-bold tracking-tight">AI Insight</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Sidebar Analysis */}
-        <aside className="flex flex-col gap-6">
-          {/* Top Moves */}
-          <div className="bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
-            <div className="p-4 bg-white/[0.02] border-b border-white/10 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Zap className="w-4 h-4 text-[#2E5BFF]" />
-                <h3 className="text-[10px] font-black uppercase tracking-[0.2em]">Engine Analysis</h3>
-              </div>
-              <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest">n=2000</span>
-            </div>
-            <div className="p-2 flex flex-col gap-1">
-              {isAnalyzing && simResult.total < 100 ? (
-                Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="h-12 bg-white/5 rounded-lg" />
-                ))
-              ) : topMoves.length > 0 ? (
-                topMoves.map((item, i) => (
-                  <button 
-                    key={i}
-                    onClick={() => handleMove(item.move)}
-                    className="flex items-center justify-between p-3 hover:bg-white/10 rounded-xl transition-all group"
-                  >
-                    <div className="flex items-center gap-4">
-                      <span className="text-[10px] font-mono text-white/20">{i + 1}</span>
-                      <span className="font-black text-base tracking-tighter">{indexToNotation(item.move)}</span>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <span className={cn(
-                        "text-sm font-mono font-bold",
-                        item.winRate > 50 ? "text-[#2E5BFF]" : item.winRate < 50 ? "text-[#FF3131]" : "text-white/40"
-                      )}>
-                        {item.winRate.toFixed(0)}%
-                      </span>
-                      <ChevronRight className="w-4 h-4 text-white/10 group-hover:text-[#2E5BFF] transition-colors" />
-                    </div>
-                  </button>
-                ))
-              ) : (
-                <div className="p-8 text-center text-white/20 text-[10px] uppercase tracking-[0.3em] italic">
-                  Idle
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* AI Insight Card */}
-          <AnimatePresence>
-            {aiAnalysisText && (
-              <motion.div 
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                className="bg-[#2E5BFF]/5 rounded-2xl border border-[#2E5BFF]/20 p-5 relative overflow-hidden group"
-              >
-                <div className="absolute top-0 left-0 w-1 h-full bg-[#2E5BFF]/40" />
-                <div className="flex items-center gap-2 mb-4">
-                  <Brain className="w-4 h-4 text-[#2E5BFF]" />
-                  <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-[#2E5BFF]">Gemini Strategic Analysis</h3>
-                </div>
-                <p className="text-sm leading-relaxed text-[#2E5BFF]/70 italic font-medium">
-                  "{aiAnalysisText}"
-                </p>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Move History */}
-          <div className="bg-white/5 rounded-2xl border border-white/10 flex-1 flex flex-col overflow-hidden">
-            <div className="p-4 bg-white/[0.02] border-b border-white/10 flex items-center gap-2">
-              <History className="w-4 h-4 text-white/30" />
-              <h3 className="text-[10px] font-black uppercase tracking-[0.2em]">Game History</h3>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-                {history.slice(1).map((h, i) => {
-                  const prevBoard = history[i].board;
-                  const currentBoard = h.board;
-                  const moveIdx = currentBoard.findIndex((cell, idx) => cell !== prevBoard[idx]);
+                        {/* Percentage Label O (Only if dominant) */}
+                        {(100 - evalPercentage) > 50 && (
+                          <div className="absolute bottom-0 left-0 right-0 flex items-center justify-center z-20" style={{ height: `${100 - evalPercentage}%` }}>
+                            <span className="text-xs font-black text-white select-none">
+                              {(100 - evalPercentage).toFixed(0)}%
+                            </span>
+                          </div>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                   
-                  return (
-                    <div key={i} className="flex items-center gap-3 p-1">
-                      <span className="text-[10px] font-mono text-white/10 w-4">{Math.floor(i / 2) + 1}.</span>
+                  {/* 50% Marker */}
+                  <div className="absolute top-1/2 left-0 right-0 h-px border-t border-white/10 z-30" />
+                  
+                  {/* Fog of War / Hidden State */}
+                  {!isAnalysisVisible && roomCode && roomData?.options?.showAnalysis !== false && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[2px] z-40">
+                      <div className="flex flex-col items-center gap-2">
+                        <Activity className="w-4 h-4 text-white/20 animate-pulse" />
+                        <span className="text-[8px] font-mono text-white/20 uppercase vertical-rl rotate-180 tracking-widest">Calculating</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="text-[10px] font-mono text-white/40 uppercase vertical-rl rotate-180 tracking-[0.3em]">
+                  Advantage Bar
+                </div>
+              </div>
+
+              {/* Main Board Area */}
+              <div className="flex flex-col gap-6">
+                {roomCode && roomData?.status === 'waiting' && (
+                  <div className="bg-[#2E5BFF]/10 border border-[#2E5BFF]/30 p-4 rounded-xl flex items-center justify-between animate-pulse">
+                    <div className="flex items-center gap-3">
+                      <Activity className="w-4 h-4 text-[#2E5BFF]" />
+                      <span className="text-sm font-bold text-[#2E5BFF]">WAITING FOR OPPONENT...</span>
+                    </div>
+                    <div className="text-xs font-mono text-[#2E5BFF]/60">CODE: {roomCode}</div>
+                  </div>
+                )}
+                
+                <div className="relative aspect-square max-w-[600px] w-full mx-auto bg-white/[0.02] p-3 rounded-2xl border border-white/10 shadow-2xl">
+                  {/* The 9x9 Grid */}
+                  <div className="grid grid-cols-3 grid-rows-3 gap-3 h-full w-full">
+                    {Array.from({ length: 9 }).map((_, subGridIdx) => (
+                      <SubGrid 
+                        key={subGridIdx}
+                        index={subGridIdx}
+                        state={state}
+                        onMove={handleMove}
+                        isNext={state.activeSubGrid === subGridIdx || state.activeSubGrid === null}
+                      />
+                    ))}
+                  </div>
+
+                  {/* Game Over Overlay */}
+                  <AnimatePresence>
+                    {state.isGameOver && (
+                      <motion.div 
+                        initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+                        animate={{ opacity: 1, backdropFilter: 'blur(8px)' }}
+                        exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+                        className="absolute inset-0 z-40 bg-black/60 flex flex-col items-center justify-center rounded-2xl border border-white/20"
+                      >
+                        <motion.div
+                          initial={{ scale: 0.5, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          transition={{ type: 'spring', delay: 0.2 }}
+                        >
+                          <Trophy className={cn(
+                            "w-24 h-24 mb-6",
+                            state.winner === 'X' ? "text-[#2E5BFF]" : state.winner === 'O' ? "text-[#FF3131]" : "text-gray-400"
+                          )} />
+                        </motion.div>
+                        <h2 className="text-5xl font-black mb-2 tracking-tighter">
+                          {state.winner ? `${state.winner} DOMINATES` : "STALEMATE"}
+                        </h2>
+                        <p className="text-white/40 mb-10 font-mono text-xs uppercase tracking-[0.4em]">Final Engine Evaluation</p>
+                        <button 
+                          onClick={roomCode ? leaveRoom : resetGame}
+                          className="px-10 py-4 bg-[#2E5BFF] hover:bg-[#2E5BFF]/80 text-white rounded-xl font-black transition-all transform hover:scale-105 active:scale-95 shadow-lg shadow-[#2E5BFF]/20"
+                        >
+                          {roomCode ? "EXIT ROOM" : "RESTART ANALYZER"}
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* Controls & Status */}
+                <div className="flex items-center justify-between bg-white/5 p-5 rounded-2xl border border-white/10">
+                  <div className="flex items-center gap-6">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] text-white/30 uppercase tracking-[0.2em] mb-1">Turn</span>
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "w-4 h-4 rounded-full",
+                          state.nextPlayer === 'X' ? "bg-[#2E5BFF] shadow-[0_0_15px_rgba(46,91,255,0.5)]" : "bg-[#FF3131] shadow-[0_0_15px_rgba(255,49,49,0.5)]"
+                        )} />
+                        <span className="font-black text-xl tracking-tight">
+                          {state.nextPlayer}
+                          {roomCode && state.nextPlayer === mySymbol && <span className="ml-2 text-[10px] text-[#2E5BFF] animate-pulse">(YOU)</span>}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="w-px h-10 bg-white/10" />
+                    <div className="flex flex-col">
+                      <span className="text-[10px] text-white/30 uppercase tracking-[0.2em] mb-1">Evaluation</span>
                       <span className={cn(
-                        "font-mono text-xs font-bold",
-                        i % 2 === 0 ? "text-[#2E5BFF]" : "text-[#FF3131]"
+                        "font-mono font-black text-xl tracking-tight",
+                        relativeScore > 0 ? "text-[#2E5BFF]" : relativeScore < 0 ? "text-[#FF3131]" : "text-white/40"
                       )}>
-                        {indexToNotation(moveIdx)}
+                        {isAnalysisVisible || !roomCode ? (
+                          relativeScore > 0 ? `+${relativeScore.toFixed(1)}` : relativeScore.toFixed(1)
+                        ) : "???"}
                       </span>
                     </div>
-                  );
-                })}
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    {!roomCode && (
+                      <button 
+                        onClick={undoMove}
+                        disabled={history.length <= 1}
+                        className="p-3 hover:bg-white/10 rounded-xl transition-colors disabled:opacity-20"
+                      >
+                        <RotateCcw className="w-5 h-5" />
+                      </button>
+                    )}
+                    <button 
+                      onClick={getAiInsight}
+                      disabled={aiThinking || state.isGameOver || (roomCode && state.nextPlayer !== mySymbol)}
+                      className="flex items-center gap-3 px-6 py-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all disabled:opacity-40 border border-white/10"
+                    >
+                      {aiThinking ? (
+                        <motion.div 
+                          animate={{ rotate: 360 }}
+                          transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                        >
+                          <Brain className="w-5 h-5 text-[#2E5BFF]" />
+                        </motion.div>
+                      ) : (
+                        <Brain className="w-5 h-5 text-[#2E5BFF]" />
+                      )}
+                      <span className="text-sm font-bold tracking-tight">AI Insight</span>
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        </aside>
+
+              {/* Sidebar Analysis */}
+              <aside className="flex flex-col gap-6">
+                {/* Top Moves */}
+                <div className="bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
+                  <div className="p-4 bg-white/[0.02] border-b border-white/10 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Zap className="w-4 h-4 text-[#2E5BFF]" />
+                      <h3 className="text-[10px] font-black uppercase tracking-[0.2em]">Engine Analysis</h3>
+                    </div>
+                    <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest">n=2000</span>
+                  </div>
+                  <div className="p-2 flex flex-col gap-1">
+                    {(!isAnalysisVisible && roomCode) ? (
+                      <div className="p-8 text-center text-white/10 text-[10px] uppercase tracking-[0.3em] italic">
+                        Fog of War Active
+                      </div>
+                    ) : isAnalyzing && simResult.total < 100 ? (
+                      Array.from({ length: 3 }).map((_, i) => (
+                        <div key={i} className="h-12 bg-white/5 rounded-lg" />
+                      ))
+                    ) : topMoves.length > 0 ? (
+                      topMoves.map((item, i) => (
+                        <button 
+                          key={i}
+                          onClick={() => handleMove(item.move)}
+                          className="flex items-center justify-between p-3 hover:bg-white/10 rounded-xl transition-all group"
+                        >
+                          <div className="flex items-center gap-4">
+                            <span className="text-[10px] font-mono text-white/20">{i + 1}</span>
+                            <span className="font-black text-base tracking-tighter">{indexToNotation(item.move)}</span>
+                          </div>
+                          <div className="flex items-center gap-4">
+                            <span className={cn(
+                              "text-sm font-mono font-bold",
+                              item.winRate > 50 ? "text-[#2E5BFF]" : item.winRate < 50 ? "text-[#FF3131]" : "text-white/40"
+                            )}>
+                              {item.winRate.toFixed(0)}%
+                            </span>
+                            <ChevronRight className="w-4 h-4 text-white/10 group-hover:text-[#2E5BFF] transition-colors" />
+                          </div>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="p-8 text-center text-white/20 text-[10px] uppercase tracking-[0.3em] italic">
+                        Idle
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* AI Insight Card */}
+                <AnimatePresence>
+                  {aiAnalysisText && (
+                    <motion.div 
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 20 }}
+                      className="bg-[#2E5BFF]/5 rounded-2xl border border-[#2E5BFF]/20 p-5 relative overflow-hidden group"
+                    >
+                      <div className="absolute top-0 left-0 w-1 h-full bg-[#2E5BFF]/40" />
+                      <div className="flex items-center gap-2 mb-4">
+                        <Brain className="w-4 h-4 text-[#2E5BFF]" />
+                        <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-[#2E5BFF]">Gemini Strategic Analysis</h3>
+                      </div>
+                      <p className="text-sm leading-relaxed text-[#2E5BFF]/70 italic font-medium">
+                        "{aiAnalysisText}"
+                      </p>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Move History */}
+                <div className="bg-white/5 rounded-2xl border border-white/10 flex-1 flex flex-col overflow-hidden">
+                  <div className="p-4 bg-white/[0.02] border-b border-white/10 flex items-center gap-2">
+                    <History className="w-4 h-4 text-white/30" />
+                    <h3 className="text-[10px] font-black uppercase tracking-[0.2em]">Game History</h3>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4">
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+                      {history.slice(1).map((h, i) => {
+                        const prevBoard = history[i].board;
+                        const currentBoard = h.board;
+                        const moveIdx = currentBoard.findIndex((cell, idx) => cell !== prevBoard[idx]);
+                        
+                        return (
+                          <div key={i} className="flex items-center gap-3 p-1">
+                            <span className="text-[10px] font-mono text-white/10 w-4">{Math.floor(i / 2) + 1}.</span>
+                            <span className={cn(
+                              "font-mono text-xs font-bold",
+                              i % 2 === 0 ? "text-[#2E5BFF]" : "text-[#FF3131]"
+                            )}>
+                              {indexToNotation(moveIdx)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </aside>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
 
       {/* Footer Info */}

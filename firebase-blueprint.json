@@ -42,12 +42,49 @@
         }
       },
       "required": ["board", "subGridWinners", "nextPlayer", "isGameOver", "timestamp", "userId"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "A multiplayer game room",
+      "type": "object",
+      "properties": {
+        "board": { "type": "array" },
+        "subGridWinners": { "type": "array" },
+        "nextPlayer": { "type": "string", "enum": ["X", "O"] },
+        "activeSubGrid": { "type": "number" },
+        "winner": { "type": "string" },
+        "isGameOver": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["waiting", "playing", "finished"] },
+        "players": {
+          "type": "object",
+          "properties": {
+            "p1": { "type": "string" },
+            "p2": { "type": "string" }
+          }
+        },
+        "p1Symbol": { "type": "string", "enum": ["X", "O"] },
+        "p2Symbol": { "type": "string", "enum": ["X", "O"] },
+        "options": {
+          "type": "object",
+          "properties": {
+            "showAnalysis": { "type": "boolean" },
+            "startingPlayer": { "type": "string", "enum": ["p1", "p2", "random"] }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastMoveAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["board", "subGridWinners", "nextPlayer", "isGameOver", "status", "players", "createdAt"]
     }
   },
   "firestore": {
     "/matches/{matchId}": {
       "schema": "Match",
       "description": "Collection of saved matches"
+    },
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Collection of multiplayer rooms"
     }
   }
 }

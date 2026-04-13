@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, collection, addDoc, query, where, onSnapshot, orderBy, Timestamp, doc, deleteDoc, getDocFromServer, enableNetwork, disableNetwork } from 'firebase/firestore';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, signInAnonymously, User } from 'firebase/auth';
+import { getFirestore, collection, addDoc, query, where, onSnapshot, orderBy, Timestamp, doc, deleteDoc, getDocFromServer, enableNetwork, disableNetwork, setDoc, updateDoc, getDoc, deleteField } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import toast from 'react-hot-toast';
 
@@ -71,5 +71,5 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-export { Timestamp, collection, addDoc, query, where, onSnapshot, orderBy, doc, deleteDoc, signInWithPopup, signOut, onAuthStateChanged, enableNetwork, disableNetwork };
+export { Timestamp, collection, addDoc, query, where, onSnapshot, orderBy, doc, deleteDoc, signInWithPopup, signOut, onAuthStateChanged, enableNetwork, disableNetwork, signInAnonymously, setDoc, updateDoc, getDoc, deleteField };
 export type { User };
