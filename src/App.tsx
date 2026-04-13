@@ -104,6 +104,17 @@ export default function App() {
   });
   const [isAnalysisVisible, setIsAnalysisVisible] = useState(true);
 
+  // Session Recovery
+  useEffect(() => {
+    const savedRoom = localStorage.getItem('uttt_room_code');
+    const savedSymbol = localStorage.getItem('uttt_my_symbol');
+    if (savedRoom && savedSymbol) {
+      setRoomCode(savedRoom);
+      setMySymbol(savedSymbol as Player);
+      setIsLobbyOpen(false);
+    }
+  }, []);
+
   const simRef = useRef<number>(0);
   const animationRef = useRef<number | null>(null);
 
@@ -438,6 +449,8 @@ export default function App() {
       await setDoc(doc(db, 'rooms', code), initialRoom);
       setRoomCode(code);
       setMySymbol(p1Symbol);
+      localStorage.setItem('uttt_room_code', code);
+      localStorage.setItem('uttt_my_symbol', p1Symbol || '');
       setIsLobbyOpen(false);
       toast.success(`Room ${code} created!`);
     } catch (error) {
@@ -469,6 +482,8 @@ export default function App() {
 
       setRoomCode(code);
       setMySymbol(data.p2Symbol);
+      localStorage.setItem('uttt_room_code', code);
+      localStorage.setItem('uttt_my_symbol', data.p2Symbol || '');
       setIsLobbyOpen(false);
       toast.success(`Joined room ${code}!`);
     } catch (error) {
@@ -495,6 +510,8 @@ export default function App() {
     setRoomCode(null);
     setRoomData(null);
     setMySymbol(null);
+    localStorage.removeItem('uttt_room_code');
+    localStorage.removeItem('uttt_my_symbol');
     setIsLobbyOpen(true);
     setState(INITIAL_STATE);
     setHistory([INITIAL_STATE]);
